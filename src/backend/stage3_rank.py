@@ -8,9 +8,10 @@ excluded by an absolute cutoff (see SPEC.md).
 
 from __future__ import annotations
 
+import os
 import dataclasses
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -34,9 +35,14 @@ MAX_SAFE_BATCH_SIZE = 64
 
 @dataclass(kw_only=True)
 class Stage3Config:
-    checkpoint_id: str = "google/siglip2-so400m-patch14-384"  # no fallback needed on this GPU
+    checkpoint_id: str = field(
+        default_factory=lambda: os.environ.get(
+            "FRAMES_SIGLIP_CHECKPOINT", "google/siglip2-so400m-patch14-384"
+        )
+    )
     top_k: int = 50
-    batch_size: int = 64  # smoke-tested sweet spot: ~64% VRAM, throughput already plateaus here
+    # 64 = smoke-tested sweet spot on a 6GB GPU (~64% VRAM). Lower it on small GPUs / CPU.
+    batch_size: int = field(default_factory=lambda: int(os.environ.get("FRAMES_BATCH_SIZE", "64")))
 
     def __post_init__(self) -> None:
         if self.batch_size > MAX_SAFE_BATCH_SIZE:
@@ -46,12 +52,24 @@ class Stage3Config:
             )
 
 
+def _select_device() -> str:
+    """'cuda' when a GPU is available, else 'cpu'. FRAMES_DEVICE=auto|cuda|cpu overrides."""
+    requested = os.environ.get("FRAMES_DEVICE", "auto").strip().lower()
+    if requested not in ("auto", "cuda", "cpu"):
+        raise ValueError(f"FRAMES_DEVICE must be auto, cuda or cpu (got {requested!r})")
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("FRAMES_DEVICE=cuda but no CUDA GPU is available.")
+    if requested == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return requested
+
+
 def _load_model(checkpoint_id: str):
-    """Requires CUDA -- SPEC.md assumes GPU available, no CPU fallback in v1."""
-    if not torch.cuda.is_available():
-        raise RuntimeError("Stage 3 requires a CUDA GPU (SigLIP2 batched inference); none available.")
+    """Load SigLIP 2 on CUDA (fp16) when available, otherwise on CPU (fp32)."""
+    device = _select_device()
+    dtype = torch.float16 if device == "cuda" else torch.float32
     processor = AutoProcessor.from_pretrained(checkpoint_id)
-    model = AutoModel.from_pretrained(checkpoint_id, dtype=torch.float16).to("cuda")
+    model = AutoModel.from_pretrained(checkpoint_id, dtype=dtype).to(device)
     model.eval()
     return model, processor
 
@@ -70,7 +88,7 @@ def _embed_query(query: str, model, processor) -> torch.Tensor:
         # dwarfing the entire relevant-vs-irrelevant signal range seen in the
         # smoke test (~0.15 vs ~0.04, a 0.11 spread). Default padding silently
         # produces a near-unrelated embedding, not a slightly-off one.
-        inputs = processor(text=[query], padding="max_length", return_tensors="pt").to("cuda")
+        inputs = processor(text=[query], padding="max_length", return_tensors="pt").to(model.device)
         embed = model.get_text_features(**inputs).pooler_output  # BaseModelOutputWithPooling
         return embed / embed.norm(dim=-1, keepdim=True)
 
@@ -80,7 +98,7 @@ def _embed_images(images: list[np.ndarray], model, processor, batch_size: int) -
         batches = []
         for start in range(0, len(images), batch_size):
             pil_images = [_to_pil_rgb(img) for img in images[start : start + batch_size]]
-            inputs = processor(images=pil_images, return_tensors="pt").to("cuda")
+            inputs = processor(images=pil_images, return_tensors="pt").to(model.device)
             embed = model.get_image_features(**inputs).pooler_output
             batches.append(embed / embed.norm(dim=-1, keepdim=True))
         return torch.cat(batches, dim=0)

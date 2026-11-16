@@ -18,6 +18,7 @@ were ever exposed to concurrent multi-process writers.
 
 from __future__ import annotations
 
+import os
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -25,7 +26,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-ASSETS_ROOT = Path("data/assets")
+# Root of all runtime state (uploads, frames, indexes).
+# In the cloud this is the mounted file share.
+ASSETS_ROOT = Path(os.environ.get("FRAMES_DATA_DIR", "data")) / "assets"
 
 SourceStatus = Literal["queued", "extracting", "deduping", "embedding", "ready", "error"]
 

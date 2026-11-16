@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import io
+import os
 import re
 import zipfile
 from contextlib import asynccontextmanager
@@ -44,6 +45,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="frames-extractor", lifespan=lifespan)
+
+
+@app.get("/health")
+def health() -> dict[str, object]:
+    """Liveness probe for the platform; also shows whether the data volume is writable."""
+    root = storage.ASSETS_ROOT
+    probe = root if root.exists() else root.parent
+    return {"status": "ok", "storage_writable": os.access(probe, os.W_OK)}
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
