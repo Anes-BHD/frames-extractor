@@ -1,0 +1,18 @@
+.git
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# State lives on the mounted volume, never in the image
+data/
+
+# Not needed at runtime
+tests/
+eval/
+scripts/
+*.md
+uv.lock
+Dockerfile
+.dockerignore
